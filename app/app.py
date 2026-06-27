@@ -1068,13 +1068,6 @@ class BatchFileItem(QWidget):
 
     def set_checked(self, checked: bool):
         self._chk.setChecked(checked)
-        if checked and self._status == "done":
-            self._status = "pending"
-            self._icon_lbl.setText(self._STATUS_ICON["pending"])
-            self._icon_lbl.setStyleSheet(
-                f"color:{self._STATUS_COLOR['pending']};font-size:12px;background-color:transparent;")
-            self._name_lbl.setStyleSheet(
-                f"color:{C['text2']};font-size:11px;background-color:transparent;")
 
     @property
     def path(self) -> str:
