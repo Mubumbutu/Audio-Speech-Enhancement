@@ -947,6 +947,7 @@ class BatchFileItem(QWidget):
         super().__init__(parent)
         self._path     = path
         self._status   = "pending"
+        self._was_done = False
         self._selected = False
         lay = QHBoxLayout(self)
         lay.setContentsMargins(4, 2, 4, 2)
@@ -955,7 +956,7 @@ class BatchFileItem(QWidget):
         self._chk = QCheckBox()
         self._chk.setChecked(True)
         self._chk.setFixedWidth(20)
-        self._chk.stateChanged.connect(lambda _: self.check_changed.emit())
+        self._chk.stateChanged.connect(self._on_check_state_changed)
         self._chk.installEventFilter(self)
 
         self._icon_lbl = QLabel("○")
@@ -1022,8 +1023,29 @@ class BatchFileItem(QWidget):
         else:
             self.setStyleSheet("background-color:transparent;")
 
+    def _on_check_state_changed(self, state):
+        if state:
+            if self._status == "done":
+                self._status = "pending"
+                self._icon_lbl.setText(self._STATUS_ICON["pending"])
+                self._icon_lbl.setStyleSheet(
+                    f"color:{self._STATUS_COLOR['pending']};font-size:12px;background-color:transparent;")
+                self._name_lbl.setStyleSheet(
+                    f"color:{C['text2']};font-size:11px;background-color:transparent;")
+        else:
+            if self._status == "pending" and self._was_done:
+                self._status = "done"
+                self._icon_lbl.setText(self._STATUS_ICON["done"])
+                self._icon_lbl.setStyleSheet(
+                    f"color:{self._STATUS_COLOR['done']};font-size:12px;background-color:transparent;")
+                self._name_lbl.setStyleSheet(
+                    f"color:{C['green']};font-size:11px;background-color:transparent;")
+        self.check_changed.emit()
+
     def set_status(self, status: str):
         self._status = status
+        if status == "done":
+            self._was_done = True
         color = self._STATUS_COLOR.get(status, C["text3"])
         icon  = self._STATUS_ICON.get(status, "○")
         self._icon_lbl.setText(icon)
@@ -1031,7 +1053,9 @@ class BatchFileItem(QWidget):
             f"color:{color};font-size:12px;background-color:transparent;")
         if status == "done":
             nc = C["green"]
+            self._chk.blockSignals(True)
             self._chk.setChecked(False)
+            self._chk.blockSignals(False)
         elif status == "error":
             nc = C["error"]
         else:
@@ -1044,6 +1068,13 @@ class BatchFileItem(QWidget):
 
     def set_checked(self, checked: bool):
         self._chk.setChecked(checked)
+        if checked and self._status == "done":
+            self._status = "pending"
+            self._icon_lbl.setText(self._STATUS_ICON["pending"])
+            self._icon_lbl.setStyleSheet(
+                f"color:{self._STATUS_COLOR['pending']};font-size:12px;background-color:transparent;")
+            self._name_lbl.setStyleSheet(
+                f"color:{C['text2']};font-size:11px;background-color:transparent;")
 
     @property
     def path(self) -> str:
