@@ -1,0 +1,15 @@
+wheel
+PyQt6
+soundfile>=0.12.1
+sounddevice
+numpy==1.26.4
+PyYAML
+matplotlib
+chardet
+torchvision
+tqdm
+einops
+librosa>=0.10.0
+resampy>=0.4.2
+pedalboard>=0.9.22
+pyloudnorm>=0.1.1

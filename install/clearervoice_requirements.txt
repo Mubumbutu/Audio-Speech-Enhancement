@@ -1,0 +1,12 @@
+wheel
+PyQt6
+soundfile>=0.12.1
+sounddevice
+numpy==1.26.4
+PyYAML
+matplotlib
+chardet
+huggingface_hub>=0.26.2
+tqdm
+scipy
+clearvoice
