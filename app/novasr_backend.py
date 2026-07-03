@@ -10,6 +10,9 @@ from models_backends import (
     EnhancementRequest,
     EnhancementResult,
     register_backend,
+    atomic_temp_path,
+    finalize_atomic_write,
+    cleanup_atomic_temp,
 )
 
 
@@ -174,7 +177,13 @@ class NovaSRBackend(AudioEnhancerBackend):
             audio_np = audio_np.reshape(1)
         audio_np = audio_np.astype(np.float32)
 
-        sf.write(out_path, audio_np, 48000)
+        tmp_out = atomic_temp_path(out_path)
+        try:
+            sf.write(tmp_out, audio_np, 48000)
+            finalize_atomic_write(tmp_out, out_path)
+        except BaseException:
+            cleanup_atomic_temp(tmp_out)
+            raise
         duration = len(audio_np) / 48000
 
         if progress_cb:
