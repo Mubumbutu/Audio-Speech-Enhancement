@@ -16,6 +16,9 @@ from models_backends import (
     EnhancementRequest,
     EnhancementResult,
     register_backend,
+    atomic_temp_path,
+    finalize_atomic_write,
+    cleanup_atomic_temp,
 )
 
 
@@ -101,6 +104,18 @@ class _CmdResult:
         self.returncode = returncode
         self.stdout_text = stdout_text
 
+_OOM_MARKERS = (
+    "out of memory",
+    "cuda error: out of memory",
+    "cublas_status_alloc_failed",
+    "cudnn_status_alloc_failed",
+)
+
+def _looks_like_oom(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(marker in lowered for marker in _OOM_MARKERS)
 
 @register_backend
 class ReuseBackend(AudioEnhancerBackend):
@@ -464,6 +479,60 @@ class ReuseBackend(AudioEnhancerBackend):
         matched = [f for f in out_files if f.stem == stem]
         return matched[0] if matched else out_files[0]
 
+    def _collect_outputs_ordered(self, enhanced_dir: Path, in_names: List[str]) -> List[Path]:
+        out_files = [
+            p for p in enhanced_dir.rglob("*")
+            if p.suffix.lower() in (".wav", ".flac") and p.is_file()
+        ]
+        if not out_files:
+            raise RuntimeError(
+                f"No output files produced in {enhanced_dir}\n"
+                "The model ran but created no audio files.\n"
+                "Check the terminal for inference output above.")
+        by_stem = {f.stem: f for f in out_files}
+        ordered: List[Path] = []
+        missing: List[str] = []
+        for in_name in in_names:
+            stem = Path(in_name).stem
+            f = by_stem.get(stem)
+            if f is not None:
+                ordered.append(f)
+            else:
+                missing.append(in_name)
+        if missing:
+            sorted_out = sorted(out_files, key=lambda p: p.name)
+            if len(sorted_out) == len(in_names):
+                return sorted_out
+            raise RuntimeError(
+                f"Could not match {len(missing)} chunk output file(s) by name: {missing}\n"
+                f"Found {len(out_files)} output file(s) in {enhanced_dir}.\n"
+                "The inference script may be renaming output files unexpectedly.")
+        return ordered
+
+    def _run_inference_with_retry(self, cmd: List[str], cwd: str, parsed_env: dict,
+                                   log_cb: Optional[Callable[[str], None]],
+                                   progress_cb: Optional[Callable[[str], None]],
+                                   max_retries: int = 3,
+                                   retry_delay_s: float = 5.0,
+                                   oom_retry_delay_s: float = 25.0) -> _CmdResult:
+        result = self._run_cmd(cmd, cwd, parsed_env, log_cb, progress_cb)
+        attempt = 0
+        while result.returncode != 0 and attempt < max_retries:
+            attempt += 1
+            oom = _looks_like_oom(result.stdout_text)
+            wait_s = (oom_retry_delay_s * attempt) if oom else (retry_delay_s * attempt)
+            reason = "GPU out-of-memory" if oom else "transient GPU/driver error"
+            if log_cb:
+                log_cb(
+                    f"\n[warning] Inference process exited with code {result.returncode}.\n"
+                    f"[warning] Detected {reason}. Retrying ({attempt}/{max_retries}) in {wait_s:.0f}s "
+                    "to give the GPU driver time to release memory...\n\n")
+            if progress_cb:
+                progress_cb(f"⚠️ {reason}, retrying ({attempt}/{max_retries})…")
+            time.sleep(wait_s)
+            result = self._run_cmd(cmd, cwd, parsed_env, log_cb, progress_cb)
+        return result
+
     def process(self, request: EnhancementRequest,
                 progress_cb: Optional[Callable[[str], None]] = None,
                 log_cb: Optional[Callable[[str], None]] = None) -> EnhancementResult:
@@ -548,10 +617,11 @@ class ReuseBackend(AudioEnhancerBackend):
             progress_cb("Running RE-USE inference…")
 
         parsed_env: dict = {}
+        parsed_env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         cmd = self._build_inference_cmd(noisy_dir, enhanced_dir, md, bwe, parsed_env, log_cb)
 
         if chunk_mode == "none":
-            result = self._run_cmd(cmd, str(md), parsed_env, log_cb, progress_cb)
+            result = self._run_inference_with_retry(cmd, str(md), parsed_env, log_cb, progress_cb)
             if result.returncode != 0:
                 tail = result.stdout_text.strip()[-2000:] if result.stdout_text.strip() else "(no output captured)"
                 raise RuntimeError(
@@ -560,7 +630,13 @@ class ReuseBackend(AudioEnhancerBackend):
             src_out = self._collect_output(enhanced_dir, tmp_wav.name)
             stem = tmp_wav.stem
             final = output_dir / f"enhanced_{stem}{src_out.suffix}"
-            shutil.copy2(str(src_out), str(final))
+            tmp_final = atomic_temp_path(final)
+            try:
+                shutil.copy2(str(src_out), tmp_final)
+                finalize_atomic_write(tmp_final, final)
+            except BaseException:
+                cleanup_atomic_temp(tmp_final)
+                raise
             if progress_cb:
                 progress_cb(f"✅ RE-USE complete: {final.name}")
             data, sr = sf.read(str(final), dtype="float32")
@@ -576,23 +652,32 @@ class ReuseBackend(AudioEnhancerBackend):
                   else chunk_smart(audio, sr, chunk_sec))
 
         if progress_cb:
-            progress_cb(f"Split into {len(chunks)} chunks, processing…")
-        enhanced_chunks = []
-        out_sr = sr
+            progress_cb(f"Split into {len(chunks)} chunks, writing…")
 
+        _clear_dirs()
+        chunk_names: List[str] = []
         for i, chunk in enumerate(chunks):
-            if progress_cb:
-                progress_cb(f"Processing chunk {i + 1}/{len(chunks)}…")
-            _clear_dirs()
             chunk_name = f"chunk_{i:04d}.wav"
             sf.write(str(noisy_dir / chunk_name), chunk, sr)
-            result = self._run_cmd(cmd, str(md), parsed_env, log_cb, progress_cb)
-            if result.returncode != 0:
-                tail = result.stdout_text.strip()[-2000:] if result.stdout_text.strip() else "(no output)"
-                raise RuntimeError(
-                    f"Chunk {i + 1} inference failed (code {result.returncode}).\n\n"
-                    f"--- output ---\n{tail}")
-            src_out = self._collect_output(enhanced_dir, chunk_name)
+            chunk_names.append(chunk_name)
+
+        if progress_cb:
+            progress_cb(f"Running RE-USE inference on {len(chunks)} chunk(s)…")
+
+        result = self._run_inference_with_retry(cmd, str(md), parsed_env, log_cb, progress_cb)
+        if result.returncode != 0:
+            tail = result.stdout_text.strip()[-2000:] if result.stdout_text.strip() else "(no output)"
+            raise RuntimeError(
+                f"Chunked inference failed (code {result.returncode}).\n\n"
+                f"--- output ---\n{tail}")
+
+        if progress_cb:
+            progress_cb("Assembling chunks with crossfade…")
+
+        out_files = self._collect_outputs_ordered(enhanced_dir, chunk_names)
+        enhanced_chunks = []
+        out_sr = sr
+        for i, src_out in enumerate(out_files):
             enh, enh_sr = sf.read(str(src_out), dtype="float32")
             if enh.ndim > 1:
                 enh = enh.mean(axis=1)
@@ -600,12 +685,16 @@ class ReuseBackend(AudioEnhancerBackend):
                 out_sr = enh_sr
             enhanced_chunks.append(enh)
 
-        if progress_cb:
-            progress_cb("Assembling chunks with crossfade…")
         stem = tmp_wav.stem
         final = output_dir / f"enhanced_{stem}.wav"
         joined = crossfade_concat(enhanced_chunks, out_sr, fade_ms=30)
-        sf.write(str(final), joined, out_sr)
+        tmp_final = atomic_temp_path(final)
+        try:
+            sf.write(tmp_final, joined, out_sr)
+            finalize_atomic_write(tmp_final, final)
+        except BaseException:
+            cleanup_atomic_temp(tmp_final)
+            raise
         if progress_cb:
             progress_cb(f"✅ RE-USE complete: {final.name}")
         duration = len(joined) / out_sr if out_sr else 0.0
