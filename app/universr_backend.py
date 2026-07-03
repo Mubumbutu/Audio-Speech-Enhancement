@@ -13,6 +13,9 @@ from models_backends import (
     EnhancementRequest,
     EnhancementResult,
     register_backend,
+    atomic_temp_path,
+    finalize_atomic_write,
+    cleanup_atomic_temp,
 )
 
 
@@ -423,7 +426,13 @@ class UniverSRBackend(AudioEnhancerBackend):
                     ode_steps=ode_steps,
                     guidance_scale=guidance_scale,
                 )
-                torchaudio.save(out_path, output.cpu(), 48000)
+                tmp_out = atomic_temp_path(out_path)
+                try:
+                    torchaudio.save(tmp_out, output.cpu(), 48000)
+                    finalize_atomic_write(tmp_out, out_path)
+                except BaseException:
+                    cleanup_atomic_temp(tmp_out)
+                    raise
                 data_len = output.shape[-1]
                 duration = data_len / 48000
             else:
@@ -458,7 +467,13 @@ class UniverSRBackend(AudioEnhancerBackend):
                 if progress_cb:
                     progress_cb("UniverSR: assembling chunks with crossfade…")
                 joined = crossfade_concat(enhanced_chunks, 48000, fade_ms=30)
-                sf.write(out_path, joined, 48000)
+                tmp_out = atomic_temp_path(out_path)
+                try:
+                    sf.write(tmp_out, joined, 48000)
+                    finalize_atomic_write(tmp_out, out_path)
+                except BaseException:
+                    cleanup_atomic_temp(tmp_out)
+                    raise
                 duration = len(joined) / 48000
         finally:
             if tmp_wav and Path(tmp_wav).exists():
