@@ -13,6 +13,9 @@ from models_backends import (
     EnhancementRequest,
     EnhancementResult,
     register_backend,
+    atomic_temp_path,
+    finalize_atomic_write,
+    cleanup_atomic_temp,
 )
 
 _CV_TASK_SR   = "speech_super_resolution"
@@ -365,7 +368,13 @@ class ClearerVoiceBackend(AudioEnhancerBackend):
         out_sr = out_sr_map.get(cv_model, 48000)
 
         out_path = str(output_dir / f"clearervoice_{stem}.wav")
-        sf.write(out_path, audio, out_sr)
+        tmp_out = atomic_temp_path(out_path)
+        try:
+            sf.write(tmp_out, audio, out_sr)
+            finalize_atomic_write(tmp_out, out_path)
+        except BaseException:
+            cleanup_atomic_temp(tmp_out)
+            raise
         duration = len(audio) / out_sr
 
         try:
