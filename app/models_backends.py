@@ -1,11 +1,31 @@
 # models_backends.py
 import os
 import sys
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Type
 
+def atomic_temp_path(final_path) -> str:
+    final = Path(final_path)
+    final.parent.mkdir(parents=True, exist_ok=True)
+    return str(final.parent / f".{final.stem}.{uuid.uuid4().hex}.part{final.suffix}")
+
+
+def finalize_atomic_write(tmp_path, final_path) -> None:
+    tmp_path = str(tmp_path)
+    with open(tmp_path, "rb+") as f:
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, str(final_path))
+
+
+def cleanup_atomic_temp(tmp_path) -> None:
+    try:
+        os.remove(str(tmp_path))
+    except OSError:
+        pass
 
 @dataclass
 class EnhancementRequest:
