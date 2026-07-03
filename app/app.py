@@ -6,10 +6,11 @@ import logging
 import subprocess
 import traceback
 import time
+import re
 import warnings
 warnings.filterwarnings("ignore")
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Callable
 
 import numpy as np
 import soundfile as sf
@@ -37,6 +38,9 @@ except ImportError:
 from models_backends import (
     EnhancementRequest,
     detect_active_backends,
+    atomic_temp_path,
+    finalize_atomic_write,
+    cleanup_atomic_temp,
 )
 import reuse             # noqa: F401  (registers ReuseBackend)
 import audiosr_backend   # noqa: F401  (registers AudioSRBackend)
@@ -212,6 +216,20 @@ QPushButton:pressed {{ background-color: #0e3060; }}
 QPushButton:disabled {{ background-color: #1a2535; color: #556070; border-color: #2a3545; }}
 """
 
+STOP_BTN = f"""
+QPushButton {{
+    background-color: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #a83a2a,stop:1 #742013);
+    border: 1px solid {C["error"]}; border-radius: 5px; color: white;
+    font-size: 14px; font-weight: 700; padding: 11px 32px;
+}}
+QPushButton:hover {{
+    background-color: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #c8422a,stop:1 #8c2a1a);
+    border-color: #ff7a5c;
+}}
+QPushButton:pressed {{ background-color: #601a10; }}
+QPushButton:disabled {{ background-color: #2a1a18; color: #705050; border-color: #45302c; }}
+"""
+
 DOWNLOAD_BTN = f"""
 QPushButton {{
     background-color: #2a2200; border: 1px solid {C["warning"]};
@@ -257,6 +275,14 @@ def _ffmpeg_ok() -> bool:
     except Exception:
         return False
 
+_NATURAL_SORT_RE = re.compile(r'(\d+)')
+
+
+def _natural_sort_key(path: str):
+    return [
+        (1, int(chunk)) if chunk.isdigit() else (0, chunk.lower())
+        for chunk in _NATURAL_SORT_RE.split(path) if chunk
+    ]
 
 AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus", ".wma", ".aiff"}
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".ts", ".mts", ".m2ts", ".wmv", ".m4v"}
@@ -705,6 +731,15 @@ class DemucsWorker(BaseWorker):
         self.out_dir    = out_dir
         self.model      = model
         self.four_stem  = four_stem
+        self._proc      = None
+
+    def stop(self):
+        proc = self._proc
+        if proc and proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
     def run(self):
         try:
@@ -716,10 +751,11 @@ class DemucsWorker(BaseWorker):
             self.status.emit(
                 f"Running Demucs ({self.model}, {'4-stem' if self.four_stem else '2-stem'})…"
                 "  (first run downloads ~320 MB model)")
-            r = subprocess.run(cmd, capture_output=True, timeout=7200)
-            if r.returncode != 0:
+            self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            _, stderr = self._proc.communicate(timeout=7200)
+            if self._proc.returncode != 0:
                 raise RuntimeError(
-                    f"Demucs failed:\n{r.stderr.decode(errors='replace')[-700:]}")
+                    f"Demucs failed:\n{stderr.decode(errors='replace')[-700:]}")
 
             stem = Path(self.input_path).stem
             base = Path(self.out_dir) / self.model / stem
@@ -752,7 +788,13 @@ class DemucsWorker(BaseWorker):
 
             background = np.sum(arrays, axis=0)
             bg_path = str(Path(self.out_dir) / f"background_{stem}.wav")
-            sf.write(bg_path, background, out_sr)
+            tmp_bg = atomic_temp_path(bg_path)
+            try:
+                sf.write(tmp_bg, background, out_sr)
+                finalize_atomic_write(tmp_bg, bg_path)
+            except BaseException:
+                cleanup_atomic_temp(tmp_bg)
+                raise
 
             self.status.emit("✅ Demucs complete (4-stem)")
             self.finished_4stem.emit(str(vocals), bg_path)
@@ -805,7 +847,13 @@ class BackgroundWorker(BaseWorker):
 
             stem     = Path(self.bg_path).stem
             out_path = str(OUTPUT_DIR / f"bg_processed_{stem}.wav")
-            sf.write(out_path, processed, sr)
+            tmp_out = atomic_temp_path(out_path)
+            try:
+                sf.write(tmp_out, processed, sr)
+                finalize_atomic_write(tmp_out, out_path)
+            except BaseException:
+                cleanup_atomic_temp(tmp_out)
+                raise
 
             self.status.emit("✅ Background processing complete.")
             self.finished.emit(out_path)
@@ -887,7 +935,13 @@ class MixWorker(BaseWorker):
             mix = board(mix.T, sr).T
 
             out_path = str(OUTPUT_DIR / f"final_mix_{self.stem_name}.wav")
-            sf.write(out_path, mix, sr, subtype="PCM_24")
+            tmp_out = atomic_temp_path(out_path)
+            try:
+                sf.write(tmp_out, mix, sr, subtype="PCM_24")
+                finalize_atomic_write(tmp_out, out_path)
+            except BaseException:
+                cleanup_atomic_temp(tmp_out)
+                raise
 
             self.status.emit("✅ Final mix complete.")
             self.finished.emit(out_path)
@@ -1085,13 +1139,18 @@ class BatchPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._items:             dict          = {}
-        self._session_name:      str           = ""
-        self._selected_path:     Optional[str] = None
-        self._last_clicked_path: Optional[str] = None
-        self._drop_hover:        bool          = False
+        self._items:               dict          = {}
+        self._session_name:        str           = ""
+        self._session_from_folder: bool          = False
+        self._selected_path:       Optional[str] = None
+        self._last_clicked_path:   Optional[str] = None
+        self._drop_hover:          bool          = False
+        self._get_output_dir: Optional[Callable[[], Path]] = None
         self.setAcceptDrops(True)
         self._build()
+
+    def set_output_dir_provider(self, fn: Callable[[], Path]) -> None:
+        self._get_output_dir = fn
 
     def _build(self):
         lay = QVBoxLayout(self)
@@ -1240,14 +1299,58 @@ class BatchPanel(QWidget):
             return
         fp    = Path(folder)
         paths = sorted(
-            str(p) for p in fp.rglob("*")
-            if p.is_file() and p.suffix.lower() in AUDIO_EXTS)
+            (str(p) for p in fp.rglob("*")
+             if p.is_file() and p.suffix.lower() in AUDIO_EXTS),
+            key=_natural_sort_key)
         if not paths:
             QMessageBox.information(self, "No audio files",
                 f"No audio files found in:\n{folder}")
             return
+
+        existing_dir = None
+        if self._get_output_dir is not None:
+            candidate = self._get_output_dir() / fp.name
+            try:
+                has_content = candidate.is_dir() and any(candidate.iterdir())
+            except Exception:
+                has_content = False
+            if has_content:
+                existing_dir = candidate
+
+        if existing_dir is not None:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Folder Already Processed")
+            msg.setText(
+                f"The output folder '{existing_dir.name}' already contains "
+                f"processed files.\n\nWhat would you like to do?")
+            btn_skip   = msg.addButton("Skip Already Processed", QMessageBox.ButtonRole.AcceptRole)
+            btn_clear  = msg.addButton("Delete and Start Over",  QMessageBox.ButtonRole.DestructiveRole)
+            btn_cancel = msg.addButton("Cancel",                 QMessageBox.ButtonRole.RejectRole)
+            msg.exec()
+            clicked = msg.clickedButton()
+
+            if clicked == btn_cancel or clicked is None:
+                return
+
+            if clicked == btn_clear:
+                try:
+                    shutil.rmtree(existing_dir)
+                except Exception:
+                    pass
+            elif clicked == btn_skip:
+                try:
+                    done_stems = {p.stem for p in existing_dir.iterdir() if p.is_file()}
+                except Exception:
+                    done_stems = set()
+                paths = [p for p in paths if Path(p).stem not in done_stems]
+                if not paths:
+                    QMessageBox.information(self, "Nothing to add",
+                        "All files from this folder have already been processed.")
+                    return
+
         if not self._session_name:
             self._session_name = fp.name
+            self._session_from_folder = True
         self.paths_requested.emit(paths)
 
     def add_files(self, paths: list):
@@ -1389,9 +1492,10 @@ class BatchPanel(QWidget):
                 self._list_lay.removeWidget(item)
                 item.deleteLater()
             self._items.clear()
-            self._selected_path     = None
-            self._last_clicked_path = None
-            self._session_name      = ""
+            self._selected_path       = None
+            self._last_clicked_path   = None
+            self._session_name        = ""
+            self._session_from_folder = False
             self._update_summary()
             self.files_changed.emit()
         
@@ -1451,6 +1555,11 @@ class BatchPanel(QWidget):
             self._items[path].set_status("error")
             self._update_summary()
 
+    def mark_pending(self, path: str):
+        if path in self._items:
+            self._items[path].set_status("pending")
+            self._update_summary()
+
     def get_pending_files(self) -> List[str]:
         return [p for p, it in self._items.items()
                 if it.is_checked() and it.status in ("pending", "error")]
@@ -1468,6 +1577,12 @@ class BatchPanel(QWidget):
     @property
     def session_name(self) -> str:
         return self._session_name or "batch"
+
+    @property
+    def session_output_subdir(self) -> Optional[str]:
+        if self._session_from_folder and self._session_name:
+            return self._session_name
+        return None
         
         
 # ════════════════════════════════════════════════════════════════════════════
@@ -1511,6 +1626,7 @@ class MainWindow(QMainWindow):
         self._batch_panel.files_changed.connect(self._update_enhance_btn)
         self._batch_panel.paths_requested.connect(self._add_paths)
         self._batch_panel.file_selected.connect(self._on_batch_file_selected)
+        self._batch_panel.set_output_dir_provider(lambda: self._output_dir)
 
         self._current_model_id       = first_backend.model_id
         self._current_path           = None
@@ -1519,6 +1635,9 @@ class MainWindow(QMainWindow):
         self._batch_start_time       = None
         self._batch_file_count       = 0
         self._batch_done_count       = 0
+        self._batch_running          = False
+        self._stop_requested         = False
+        self._hard_stop_requested    = False
         self._demucs_bg_path         = None
         self._demucs_enhanced_vocals = None
         self._processed_map: dict = {}
@@ -1841,16 +1960,24 @@ class MainWindow(QMainWindow):
         self._worker.log_output.connect(lambda line: print(line, end="", flush=True))
         self._worker.error.connect(self._on_worker_error)
         self._worker.finished.connect(on_finished)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.error.connect(self._worker.deleteLater)
         self._worker.start()
 
     def _on_demucs_2stem_done(self, vocals_path: str):
+        if not self._batch_running:
+            return
         self._start_backend_worker(vocals_path, self._on_file_processed)
 
     def _on_demucs_4stem_done(self, vocals_path: str, bg_path: str):
+        if not self._batch_running:
+            return
         self._demucs_bg_path = bg_path
         self._start_backend_worker(vocals_path, self._on_enhanced_vocals_4stem_done)
 
     def _on_enhanced_vocals_4stem_done(self, enhanced_vocals: str):
+        if not self._batch_running:
+            return
         self._demucs_enhanced_vocals = enhanced_vocals
         if self._chk_bg_process.isChecked() and _PEDALBOARD_OK:
             hp  = float(self._spinbox_highpass.value())
@@ -1865,6 +1992,8 @@ class MainWindow(QMainWindow):
             self._on_bg_processed_done(self._demucs_bg_path)
 
     def _on_bg_processed_done(self, processed_bg: str):
+        if not self._batch_running:
+            return
         if self._chk_final_mix.isChecked() and _PEDALBOARD_OK:
             stem       = Path(self._current_path).stem
             vocal_lufs = -float(self._vocal_lufs_slider.value())
@@ -1918,18 +2047,24 @@ class MainWindow(QMainWindow):
             self._out_dir_display.setToolTip(str(self._output_dir))
 
     def _convert_to_format(self, src: str, dest: str, fmt: str) -> None:
-        if fmt in ("wav", "flac"):
-            data, sr = sf.read(src, dtype="float32")
-            subtype = "PCM_24"
-            sf.write(dest, data, sr, subtype=subtype)
-        else:
-            r = subprocess.run(
-                ["ffmpeg", "-y", "-i", src, dest],
-                capture_output=True, timeout=300,
-            )
-            if r.returncode != 0:
-                raise RuntimeError(
-                    f"ffmpeg conversion failed:\n{r.stderr.decode(errors='replace')[-400:]}")
+        tmp_dest = atomic_temp_path(dest)
+        try:
+            if fmt in ("wav", "flac"):
+                data, sr = sf.read(src, dtype="float32")
+                subtype = "PCM_24"
+                sf.write(tmp_dest, data, sr, subtype=subtype)
+            else:
+                r = subprocess.run(
+                    ["ffmpeg", "-y", "-i", src, tmp_dest],
+                    capture_output=True, timeout=300,
+                )
+                if r.returncode != 0:
+                    raise RuntimeError(
+                        f"ffmpeg conversion failed:\n{r.stderr.decode(errors='replace')[-400:]}")
+            finalize_atomic_write(tmp_dest, dest)
+        except BaseException:
+            cleanup_atomic_temp(tmp_dest)
+            raise
 
     # ── Model status ─────────────────────────────────────────────────────────
     def _model_ready(self) -> bool:
@@ -2020,12 +2155,31 @@ class MainWindow(QMainWindow):
 
     # ── Batch processing ─────────────────────────────────────────────────────
     def _update_enhance_btn(self):
+        if self._batch_running:
+            self._btn_enhance.setStyleSheet(STOP_BTN)
+            if self._hard_stop_requested:
+                self._btn_enhance.setEnabled(False)
+                self._btn_enhance.setText("⏳ Force stopping…")
+            elif self._stop_requested:
+                self._btn_enhance.setEnabled(True)
+                self._btn_enhance.setText("🛑 Hard Stop Queue")
+            else:
+                self._btn_enhance.setEnabled(True)
+                self._btn_enhance.setText("⏹ Stop Queue")
+            return
+        self._btn_enhance.setStyleSheet(ENHANCE_BTN)
         has_checked = self._batch_panel.has_checked_files()
         model_ok    = self._model_ready()
         self._btn_enhance.setEnabled(has_checked and model_ok)
         self._btn_enhance.setText("⚡ Process Queue" if has_checked else "⚡ Enhance Audio")
 
     def _run_enhancement(self):
+        if self._batch_running:
+            if self._stop_requested:
+                self._request_hard_stop()
+            else:
+                self._request_stop()
+            return
         if not self._batch_panel.has_checked_files():
             QMessageBox.warning(self, "No files", "Select files to process first.")
             return
@@ -2034,21 +2188,59 @@ class MainWindow(QMainWindow):
             return
         if self._worker and self._worker.isRunning():
             return
-        self._btn_enhance.setEnabled(False)
+        self._batch_running       = True
+        self._stop_requested      = False
+        self._hard_stop_requested = False
+        self._update_enhance_btn()
         self._batch_start_time = time.time()
         self._batch_done_count = 0
         self._batch_file_count = len(self._batch_panel.get_pending_files())
         self._process_next_file()
 
+    def _request_stop(self):
+        if not self._batch_running or self._stop_requested:
+            return
+        self._stop_requested = True
+        self._update_enhance_btn()
+        self._set_status(
+            "Stop requested — finishing current file, then stopping…", C["warning"])
+
+    def _request_hard_stop(self):
+        if not self._batch_running or not self._stop_requested or self._hard_stop_requested:
+            return
+        self._hard_stop_requested = True
+        self._update_enhance_btn()
+        QApplication.processEvents()
+        self._set_status("Force stopping current task…", C["error"])
+
+        worker = self._worker
+        if worker and worker.isRunning():
+            if hasattr(worker, "stop"):
+                try:
+                    worker.stop()
+                except Exception:
+                    pass
+                worker.wait(1500)
+            if worker.isRunning():
+                worker.terminate()
+                worker.wait(3000)
+            if self._current_path:
+                self._batch_panel.mark_pending(self._current_path)
+            self._progress.setVisible(False)
+
+        self._finish_batch(cancelled=True)
+
     def _process_next_file(self):
+        if not self._batch_running:
+            return
+        if self._stop_requested:
+            self._finish_batch(cancelled=True)
+            return
         pending = self._batch_panel.get_pending_files()
         if not pending:
-            self._btn_enhance.setEnabled(True)
-            self._batch_panel.update_eta("")
-            self._set_status("✅ Batch processing complete!", C["success"])
+            self._finish_batch()
             return
 
-        self._btn_enhance.setEnabled(False)
         self._current_path = pending[0]
         self._batch_panel.mark_processing(self._current_path)
         self._progress.setVisible(True)
@@ -2070,11 +2262,29 @@ class MainWindow(QMainWindow):
         else:
             self._start_backend_worker(self._current_path, self._on_file_processed)
 
+    def _finish_batch(self, cancelled: bool = False):
+        if not self._batch_running:
+            return
+        self._batch_running       = False
+        self._stop_requested      = False
+        self._hard_stop_requested = False
+        self._batch_panel.update_eta("")
+        self._update_enhance_btn()
+        if cancelled:
+            self._set_status("⏹ Queue stopped.", C["warning"])
+        else:
+            self._set_status("✅ Batch processing complete!", C["success"])
+
     def _on_file_processed(self, out_path: str):
+        if not self._batch_running:
+            return
         self._batch_panel.mark_done(self._current_path)
 
         fmt     = self._fmt_combo.currentData()
         out_dir = self._output_dir
+        subdir  = self._batch_panel.session_output_subdir
+        if subdir:
+            out_dir = out_dir / subdir
         out_dir.mkdir(parents=True, exist_ok=True)
 
         stem      = Path(self._current_path).stem
@@ -2113,8 +2323,13 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(300, self._process_next_file)
 
     def _on_worker_error(self, e: str):
+        if not self._batch_running:
+            return
         self._batch_panel.mark_error(self._current_path)
         self._progress.setVisible(False)
+        if self._stop_requested:
+            self._finish_batch(cancelled=True)
+            return
         self._set_status("Processing error", C["error"])
         QMessageBox.critical(self, "Processing Error", e)
         QTimer.singleShot(300, self._process_next_file)
@@ -2135,6 +2350,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e):
         if self._worker and self._worker.isRunning():
+            if hasattr(self._worker, "stop"):
+                self._worker.stop()
             self._worker.terminate()
             self._worker.wait(3000)
         e.accept()
