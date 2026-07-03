@@ -12,6 +12,9 @@ from models_backends import (
     EnhancementRequest,
     EnhancementResult,
     register_backend,
+    atomic_temp_path,
+    finalize_atomic_write,
+    cleanup_atomic_temp,
 )
 
 
@@ -239,16 +242,23 @@ class VoiceFixerBackend(AudioEnhancerBackend):
                 f"VoiceFixer: restoring speech "
                 f"(mode={mode}, device={device_str})…")
 
-        vf.restore(
-            input=input_path,
-            output=out_path,
-            cuda=cuda,
-            mode=mode,
-        )
+        tmp_out = atomic_temp_path(out_path)
+        try:
+            vf.restore(
+                input=input_path,
+                output=tmp_out,
+                cuda=cuda,
+                mode=mode,
+            )
 
-        if not Path(out_path).exists():
-            raise RuntimeError(
-                f"VoiceFixer did not produce an output file at:\n{out_path}")
+            if not Path(tmp_out).exists():
+                raise RuntimeError(
+                    f"VoiceFixer did not produce an output file at:\n{tmp_out}")
+
+            finalize_atomic_write(tmp_out, out_path)
+        except BaseException:
+            cleanup_atomic_temp(tmp_out)
+            raise
 
         data, sr = sf.read(out_path, dtype="float32")
         duration  = len(data) / max(1, sr)
