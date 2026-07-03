@@ -13,6 +13,9 @@ from models_backends import (
     EnhancementRequest,
     EnhancementResult,
     register_backend,
+    atomic_temp_path,
+    finalize_atomic_write,
+    cleanup_atomic_temp,
 )
 
 
@@ -271,7 +274,13 @@ class AudioSRBackend(AudioEnhancerBackend):
                     data = data[0][0]
                 elif data.ndim == 2:
                     data = data[0]
-                sf.write(out_path, data, 48000)
+                tmp_out = atomic_temp_path(out_path)
+                try:
+                    sf.write(tmp_out, data, 48000)
+                    finalize_atomic_write(tmp_out, out_path)
+                except BaseException:
+                    cleanup_atomic_temp(tmp_out)
+                    raise
                 duration = len(data) / 48000
             else:
                 audio, sr = sf.read(actual_input, dtype="float32")
@@ -300,7 +309,13 @@ class AudioSRBackend(AudioEnhancerBackend):
                 if progress_cb:
                     progress_cb("AudioSR: assembling chunks with crossfade…")
                 joined = crossfade_concat(enhanced_chunks, 48000, fade_ms=30)
-                sf.write(out_path, joined, 48000)
+                tmp_out = atomic_temp_path(out_path)
+                try:
+                    sf.write(tmp_out, joined, 48000)
+                    finalize_atomic_write(tmp_out, out_path)
+                except BaseException:
+                    cleanup_atomic_temp(tmp_out)
+                    raise
                 duration = len(joined) / 48000
         finally:
             if needs_lowpass and actual_input != input_path:
