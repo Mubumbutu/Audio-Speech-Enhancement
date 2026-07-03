@@ -15,6 +15,9 @@ from models_backends import (
     EnhancementRequest,
     EnhancementResult,
     register_backend,
+    atomic_temp_path,
+    finalize_atomic_write,
+    cleanup_atomic_temp,
 )
 
 _MODEL_URLS = {
@@ -414,7 +417,13 @@ class DeepFilterNetBackend(AudioEnhancerBackend):
                     pad=True,
                     atten_lim_db=atten_lim_db,
                 )
-                save_audio(out_path, enhanced, df_sr)
+                tmp_out = atomic_temp_path(out_path)
+                try:
+                    save_audio(tmp_out, enhanced, df_sr)
+                    finalize_atomic_write(tmp_out, out_path)
+                except BaseException:
+                    cleanup_atomic_temp(tmp_out)
+                    raise
                 data, sr_out = sf.read(out_path, dtype="float32")
                 duration = len(data) / sr_out if sr_out else 0.0
 
@@ -453,7 +462,13 @@ class DeepFilterNetBackend(AudioEnhancerBackend):
                 if progress_cb:
                     progress_cb("DeepFilterNet: assembling chunks with crossfade…")
                 joined = _crossfade_concat(enhanced_chunks, df_sr, fade_ms=30)
-                sf.write(out_path, joined, df_sr)
+                tmp_out = atomic_temp_path(out_path)
+                try:
+                    sf.write(tmp_out, joined, df_sr)
+                    finalize_atomic_write(tmp_out, out_path)
+                except BaseException:
+                    cleanup_atomic_temp(tmp_out)
+                    raise
                 duration = len(joined) / df_sr
 
         finally:
