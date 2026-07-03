@@ -11,6 +11,9 @@ from models_backends import (
     EnhancementRequest,
     EnhancementResult,
     register_backend,
+    atomic_temp_path,
+    finalize_atomic_write,
+    cleanup_atomic_temp,
 )
 
 
@@ -355,7 +358,13 @@ class LavaSRBackend(AudioEnhancerBackend):
             audio_tensor, _ = model.load_audio(input_path, input_sr=input_sr)
             output_tensor   = model.enhance(audio_tensor, denoise=denoise)
             output_audio    = output_tensor.cpu().numpy().squeeze().astype(np.float32)
-            sf.write(out_path, output_audio, 48000)
+            tmp_out = atomic_temp_path(out_path)
+            try:
+                sf.write(tmp_out, output_audio, 48000)
+                finalize_atomic_write(tmp_out, out_path)
+            except BaseException:
+                cleanup_atomic_temp(tmp_out)
+                raise
             duration = len(output_audio) / 48000
         else:
             audio, sr = sf.read(input_path, dtype="float32")
@@ -377,7 +386,13 @@ class LavaSRBackend(AudioEnhancerBackend):
             if progress_cb:
                 progress_cb("LavaSR: assembling chunks with crossfade…")
             joined   = _crossfade_concat(enhanced_chunks, 48000, fade_ms=30)
-            sf.write(out_path, joined, 48000)
+            tmp_out = atomic_temp_path(out_path)
+            try:
+                sf.write(tmp_out, joined, 48000)
+                finalize_atomic_write(tmp_out, out_path)
+            except BaseException:
+                cleanup_atomic_temp(tmp_out)
+                raise
             duration = len(joined) / 48000
 
         if progress_cb:
