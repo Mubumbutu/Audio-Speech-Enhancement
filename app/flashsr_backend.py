@@ -12,6 +12,9 @@ from models_backends import (
     EnhancementRequest,
     EnhancementResult,
     register_backend,
+    atomic_temp_path,
+    finalize_atomic_write,
+    cleanup_atomic_temp,
 )
 
 
@@ -264,7 +267,13 @@ class FlashSRBackend(AudioEnhancerBackend):
             enhanced = self._process_pytorch(audio_16k, model_dir, progress_cb)
 
         out_path = str(output_dir / f"flashsr_{stem}.wav")
-        sf.write(out_path, enhanced.astype(np.float32), 48000)
+        tmp_out = atomic_temp_path(out_path)
+        try:
+            sf.write(tmp_out, enhanced.astype(np.float32), 48000)
+            finalize_atomic_write(tmp_out, out_path)
+        except BaseException:
+            cleanup_atomic_temp(tmp_out)
+            raise
         duration = len(enhanced) / 48000
 
         if progress_cb:
