@@ -10,6 +10,9 @@ from models_backends import (
     EnhancementRequest,
     EnhancementResult,
     register_backend,
+    atomic_temp_path,
+    finalize_atomic_write,
+    cleanup_atomic_temp,
 )
 
 
@@ -154,7 +157,13 @@ class FlowHighBackend(AudioEnhancerBackend):
         wav_hr = model.generate(wav_np, sr_in, 48000)
 
         out_path = str(output_dir / f"flowhigh_{stem}.wav")
-        ta.save(out_path, wav_hr.cpu(), 48000)
+        tmp_out = atomic_temp_path(out_path)
+        try:
+            ta.save(tmp_out, wav_hr.cpu(), 48000)
+            finalize_atomic_write(tmp_out, out_path)
+        except BaseException:
+            cleanup_atomic_temp(tmp_out)
+            raise
         duration = wav_hr.shape[-1] / 48000
 
         if progress_cb:
