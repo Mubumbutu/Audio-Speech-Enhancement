@@ -961,6 +961,11 @@ class BackendWorker(BaseWorker):
         self.output_dir = output_dir
         self.params     = params
 
+    def stop(self):
+        cancel = getattr(self.backend, "cancel", None)
+        if callable(cancel):
+            cancel()
+
     def run(self):
         try:
             request = EnhancementRequest(
@@ -1954,14 +1959,18 @@ class MainWindow(QMainWindow):
 
     def _start_backend_worker(self, input_path: str, on_finished) -> None:
         backend = self._backend
+        old = self._worker
+        try:
+            if old is not None and old.isRunning():
+                old.wait(3000)
+        except RuntimeError:
+            pass
         self._worker = BackendWorker(
             backend, input_path, self._output_dir, self._build_backend_params())
         self._worker.status.connect(self._set_status)
         self._worker.log_output.connect(lambda line: print(line, end="", flush=True))
         self._worker.error.connect(self._on_worker_error)
         self._worker.finished.connect(on_finished)
-        self._worker.finished.connect(self._worker.deleteLater)
-        self._worker.error.connect(self._worker.deleteLater)
         self._worker.start()
 
     def _on_demucs_2stem_done(self, vocals_path: str):
@@ -2349,11 +2358,19 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, title, tb)
 
     def closeEvent(self, e):
-        if self._worker and self._worker.isRunning():
-            if hasattr(self._worker, "stop"):
-                self._worker.stop()
-            self._worker.terminate()
-            self._worker.wait(3000)
+        worker = self._worker
+        try:
+            if worker is not None and worker.isRunning():
+                if hasattr(worker, "stop"):
+                    try:
+                        worker.stop()
+                    except Exception:
+                        pass
+                if not worker.wait(3000):
+                    worker.terminate()
+                    worker.wait(3000)
+        except RuntimeError:
+            pass
         e.accept()
 
 
