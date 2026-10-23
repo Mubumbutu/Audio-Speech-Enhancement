@@ -356,16 +356,35 @@ class ReuseBackend(AudioEnhancerBackend):
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             env=env, text=True, errors="replace",
         )
+        self._proc = proc
         output_lines: List[str] = []
-        for line in proc.stdout:
-            output_lines.append(line)
-            if log_cb:
-                log_cb(line)
-            stripped = line.strip()
-            if stripped and len(stripped) < 200 and progress_cb:
-                progress_cb(stripped)
-        proc.wait()
+        try:
+            for line in proc.stdout:
+                output_lines.append(line)
+                if log_cb:
+                    log_cb(line)
+                stripped = line.strip()
+                if stripped and len(stripped) < 200 and progress_cb:
+                    progress_cb(stripped)
+            proc.wait()
+        finally:
+            self._proc = None
         return _CmdResult(proc.returncode, "".join(output_lines))
+
+    def cancel(self) -> None:
+        proc = getattr(self, "_proc", None)
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            else:
+                proc.kill()
+        except Exception:
+            pass
 
     def _build_inference_cmd(self, noisy_dir: Path, enhanced_dir: Path, md: Path,
                               bwe: int, parsed_env: dict,
