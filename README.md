@@ -1,16 +1,47 @@
 # Audio & Speech Enhancement
+<p align="center">
+</p>
+
+
+<p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.0.0-blue" />
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white" />
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-lightgrey" />
+  <img alt="CUDA" src="https://img.shields.io/badge/CUDA-11.8%20%7C%2012.1%20%7C%2012.4-76b900?logo=nvidia&logoColor=white" />
+  <img alt="Status" src="https://img.shields.io/badge/status-stable-brightgreen" />
+  <img alt="License" src="https://img.shields.io/badge/License-GPLv3-blue" />
+</p>
 
 Desktop application for enhancing audio quality using AI models. Load a file, pick a model, press process — the app upsamples, denoises or restores speech and saves the result in the format you choose.
 
+---
+
 <img width="1303" height="874" alt="bettervoice" src="https://github.com/user-attachments/assets/85dc8bb4-09f8-4d07-a02f-1d3aead4cb27" />
 
-Before:
+---
+
+Audio before:
 
 https://soundcloud.com/mubumbutu/test
 
-After(RE-USE):
+Audio after (RE-USE):
 
 https://soundcloud.com/mubumbutu/testnew
+
+---
+
+## Changelog
+
+<details>
+<summary><b>Version history</b> (click to expand)</summary>
+
+<br>
+
+### [1.0.0] - 2026-10-23
+**Added**
+- Initial public release version 1.0.0.
+
+</details>
 
 ---
 
