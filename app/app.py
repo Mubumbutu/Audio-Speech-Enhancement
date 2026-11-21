@@ -52,6 +52,7 @@ import novasr_backend    # noqa: F401  (registers NovaSRBackend)
 import clearervoice_backend  # noqa: F401  (registers ClearerVoiceBackend)
 import flowhigh_backend  # noqa: F401  (registers FlowHighBackend)
 import voicefixer_backend  # noqa: F401  (registers VoiceFixerBackend)
+import voice_isolator_v1  # noqa: F401  (registers VoiceIsolatorV1Backend)
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -1863,18 +1864,17 @@ class MainWindow(QMainWindow):
 
     def _build_dynamic_params_widget(self, opts_lay) -> None:
         self._dynamic_widgets: dict = {}
+        self._dynamic_rows: dict = {}
         for p in self._backend.processing_params:
             key      = p["key"]
             ptype    = p["type"]
             label    = p.get("label", key)
             tooltip  = p.get("tooltip", "")
             default  = p.get("default")
-
             row_w = QWidget()
             row   = QHBoxLayout(row_w)
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(12)
-
             if ptype == "choice":
                 lbl = QLabel(f"{label}:")
                 lbl.setStyleSheet(f"color:{C['text2']};font-size:12px;background-color:transparent;")
@@ -1890,14 +1890,12 @@ class MainWindow(QMainWindow):
                 row.addWidget(combo)
                 row.addStretch()
                 self._dynamic_widgets[key] = combo
-
                 if key == "chunk_mode":
-                    def _on_chunk_mode_changed(text, rw=row_w):
-                        sec_w = self._dynamic_widgets.get("chunk_sec_row")
-                        if sec_w:
-                            sec_w.setVisible(combo.currentData() != "none")
+                    def _on_chunk_mode_changed(_=0, cb=combo):
+                        sec_w = self._dynamic_rows.get("chunk_sec")
+                        if sec_w is not None:
+                            sec_w.setVisible(cb.currentData() != "none")
                     combo.currentIndexChanged.connect(_on_chunk_mode_changed)
-
             elif ptype in ("spin", "double_spin"):
                 lbl = QLabel(f"{label}:")
                 lbl.setStyleSheet(f"color:{C['text2']};font-size:12px;background-color:transparent;")
@@ -1905,12 +1903,13 @@ class MainWindow(QMainWindow):
                     spin = QDoubleSpinBox()
                     spin.setDecimals(p.get("decimals", 2))
                     spin.setSingleStep(p.get("step", 0.1))
+                    spin.setRange(float(p.get("min", 0)), float(p.get("max", 100)))
                     spin.setValue(float(default) if default is not None else 0.0)
                 else:
                     spin = QSpinBox()
-                    spin.setSingleStep(p.get("step", 1))
+                    spin.setSingleStep(int(p.get("step", 1)))
+                    spin.setRange(int(p.get("min", 0)), int(p.get("max", 100)))
                     spin.setValue(int(default) if default is not None else 0)
-                spin.setRange(p.get("min", 0), p.get("max", 100))
                 if p.get("suffix"):
                     spin.setSuffix(p["suffix"])
                 spin.setFixedWidth(110)
@@ -1920,13 +1919,10 @@ class MainWindow(QMainWindow):
                 row.addWidget(spin)
                 row.addStretch()
                 self._dynamic_widgets[key] = spin
-
                 if key == "chunk_sec":
-                    self._dynamic_widgets["chunk_sec_row"] = row_w
                     chunk_mode_combo = self._dynamic_widgets.get("chunk_mode")
-                    if chunk_mode_combo:
+                    if chunk_mode_combo is not None:
                         row_w.setVisible(chunk_mode_combo.currentData() != "none")
-
             elif ptype == "bool":
                 chk = QCheckBox(label)
                 chk.setChecked(bool(default))
@@ -1935,8 +1931,23 @@ class MainWindow(QMainWindow):
                 row.addWidget(chk)
                 row.addStretch()
                 self._dynamic_widgets[key] = chk
-
+            self._dynamic_rows[key] = row_w
             opts_lay.addWidget(row_w)
+        for p in self._backend.processing_params:
+            cond = p.get("visible_when")
+            if not cond:
+                continue
+            ctrl  = self._dynamic_widgets.get(cond.get("key"))
+            row_w = self._dynamic_rows.get(p["key"])
+            if row_w is None or not isinstance(ctrl, QComboBox):
+                continue
+            values = cond.get("values")
+            if values is None:
+                values = [cond.get("value")]
+            def _apply_visibility(rw=row_w, cb=ctrl, vals=tuple(values)):
+                rw.setVisible(cb.currentData() in vals)
+            ctrl.currentIndexChanged.connect(lambda _=0, fn=_apply_visibility: fn())
+            _apply_visibility()
 
     def _build_backend_params(self) -> dict:
         backend = self._backend
