@@ -116,7 +116,8 @@ class AudioEnhancerBackend(ABC):
 
     @abstractmethod
     def process(self, request: EnhancementRequest,
-                progress_cb: Optional[Callable[[str], None]] = None) -> EnhancementResult:
+                progress_cb: Optional[Callable[[str], None]] = None,
+                log_cb: Optional[Callable[[str], None]] = None) -> EnhancementResult:
         ...
 
     @abstractmethod
