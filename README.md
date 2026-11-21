@@ -4,7 +4,7 @@
 
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.0.0-blue" />
+  <img alt="Version" src="https://img.shields.io/badge/version-1.0.1-blue" />
   <img alt="Python" src="https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-lightgrey" />
   <img alt="CUDA" src="https://img.shields.io/badge/CUDA-11.8%20%7C%2012.1%20%7C%2012.4-76b900?logo=nvidia&logoColor=white" />
@@ -37,6 +37,13 @@ https://soundcloud.com/mubumbutu/testnew
 
 <br>
 
+### [1.0.1] - 2026-11-21
+**Added**
+- New model: **Inworld Voice Isolator v1** (Apache-2.0, 48 kHz) — offline/streaming modes, look-ahead 0/20/40 ms, device & precision selection, optional background export.
+
+**Fixed**
+- NovaSR path in `install.bat`.
+
 ### [1.0.0] - 2026-10-23
 **Added**
 - Initial public release version 1.0.0.
@@ -53,18 +60,19 @@ Process and restore audio files using a range of AI-powered enhancement models. 
 
 ## Models
 
-| Backend                     | Task                                             |
-| --------------------------- | ------------------------------------------------ |
-| **RE-USE** (NVIDIA)         | Speech enhancement + bandwidth extension         |
-| **AudioSR**                 | Audio super-resolution                           |
-| **UniverSR**                | Universal audio super-resolution (flow matching) |
-| **DeepFilterNet** (v2 / v3) | Real-time noise suppression                      |
-| **FlashSR**                 | Fast super-resolution (ONNX / PyTorch)           |
-| **LavaSR**                  | Super-resolution with optional denoising         |
-| **NovaSR**                  | Super-resolution (fp16 / fp32)                   |
-| **ClearerVoice** (Alibaba)  | Super-resolution + speech enhancement            |
-| **FlowHigh** (Resemble AI)  | Flow-based super-resolution                      |
-| **VoiceFixer**              | End-to-end speech restoration                    |
+| Backend                        | Task                                              | Links                                                                                          |
+| ------------------------------ | ------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| **RE-USE** (NVIDIA)            | Speech enhancement + bandwidth extension          | [HF](https://huggingface.co/nvidia/RE-USE)                                                      |
+| **AudioSR**                    | Audio super-resolution                            | [GitHub](https://github.com/haoheliu/versatile_audio_super_resolution)                          |
+| **UniverSR**                   | Universal audio super-resolution (flow matching)  | [GitHub](https://github.com/woongzip1/UniverSR) · [HF](https://huggingface.co/woongzip1/universr-audio) |
+| **DeepFilterNet** (v2 / v3)    | Real-time noise suppression                       | [GitHub](https://github.com/Rikorose/DeepFilterNet)                                             |
+| **FlashSR**                    | Fast super-resolution (ONNX / PyTorch)            | [GitHub](https://github.com/jakeoneijk/FlashSR_Inference)                                       |
+| **LavaSR**                     | Super-resolution with optional denoising          | [GitHub](https://github.com/ysharma3501/LavaSR) · [HF](https://huggingface.co/YatharthS/LavaSR)  |
+| **NovaSR**                     | Super-resolution (fp16 / fp32)                    | [GitHub](https://github.com/ysharma3501/NovaSR) · [HF](https://huggingface.co/YatharthS/NovaSR)  |
+| **ClearerVoice** (Alibaba)     | Super-resolution + speech enhancement             | [GitHub](https://github.com/modelscope/ClearerVoice-Studio)                                     |
+| **FlowHigh** (Resemble AI)     | Flow-based super-resolution                       | [GitHub](https://github.com/resemble-ai/flowhigh)                                               |
+| **VoiceFixer**                 | End-to-end speech restoration                     | [GitHub](https://github.com/haoheliu/voicefixer)                                                |
+| **Voice Isolator v1** (Inworld) | 48 kHz voice isolation (offline + streaming)     | [GitHub](https://github.com/inworld-ai/voice-isolator) · [HF](https://huggingface.co/inworld/voice-isolator) |
 
 ---
 
